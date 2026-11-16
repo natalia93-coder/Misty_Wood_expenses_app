@@ -1,0 +1,274 @@
+
+
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Учет расходов</title>
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--tg-theme-bg-color, #ffffff);
+      color: var(--tg-theme-text-color, #000000);
+      padding: 16px;
+      margin: 0;
+    }
+    h2 { margin: 0 0 16px; font-size: 20px; }
+    .field { margin-bottom: 14px; }
+    label { display: block; margin-bottom: 6px; font-weight: 600; font-size: 14px; }
+    select, input, textarea {
+      width: 100%;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1px solid #ccc;
+      box-sizing: border-box;
+      font-size: 15px;
+      background: var(--tg-theme-secondary-bg-color, #f7f7f7);
+      color: var(--tg-theme-text-color, #000000);
+    }
+    textarea { resize: vertical; min-height: 64px; }
+    .pay-group {
+      display: flex;
+      gap: 10px;
+    }
+    .pay-btn {
+      flex: 1;
+      padding: 12px;
+      border-radius: 10px;
+      border: 1.5px solid #0088cc;
+      background: transparent;
+      color: #0088cc;
+      font-size: 15px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: 0.15s;
+    }
+    .pay-btn.active {
+      background: #0088cc;
+      color: #ffffff;
+    }
+    .file-box {
+      border: 1.5px dashed #0088cc;
+      border-radius: 10px;
+      padding: 14px;
+      text-align: center;
+      cursor: pointer;
+      font-size: 14px;
+      color: #0088cc;
+    }
+    .file-name { margin-top: 6px; font-size: 13px; color: #555; word-break: break-all; }
+    .loader { text-align: center; padding: 30px; color: #666; }
+  </style>
+</head>
+<body>
+
+  <div id="loading" class="loader">Загрузка справочников...</div>
+
+  <div id="app" style="display: none;">
+    <h2>Внесение расхода</h2>
+
+    <div class="field">
+      <label for="exp-date">Дата расхода:</label>
+      <input type="date" id="exp-date">
+    </div>
+
+    <div class="field">
+      <label for="location">Точка:</label>
+      <select id="location"></select>
+    </div>
+
+    <div class="field">
+      <label>Тип оплаты:</label>
+      <div id="payment-group" class="pay-group"></div>
+    </div>
+
+    <div class="field">
+      <label for="category">Статья расхода:</label>
+      <select id="category"></select>
+    </div>
+
+    <div class="field">
+      <label for="amount">Сумма (₽):</label>
+      <input type="number" id="amount" inputmode="decimal" step="0.01" placeholder="Например: 4500">
+    </div>
+
+    <div class="field">
+      <label for="comment">Комментарий (назначение):</label>
+      <textarea id="comment" placeholder="За что оплата / контрагент (необязательно)"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Документ или фото чека (при наличии):</label>
+      <div class="file-box" onclick="document.getElementById('doc-file').click()">
+        📎 Нажмите, чтобы прикрепить фото или PDF
+        <div id="file-name" class="file-name">Файл не выбран</div>
+      </div>
+      <input type="file" id="doc-file" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" style="display: none;">
+    </div>
+  </div>
+
+  <script>
+    const tg = window.Telegram.WebApp;
+    tg.expand();
+
+    // ВСТАВЬТЕ СЮДА ССЫЛКУ НА НОВЫЙ GOOGLE APPS SCRIPT (/exec)
+    const GAS_URL = "https://script.google.com/macros/s/AKfycbx8SlTS4mePLa8pr22KqHvlLzAnbpI-lXmo4R5Z4AlKo_WiSYfI2yJscQjU1RHNUoecbA/exec";
+
+    // Текущая дата с учётом локального часового пояса
+    const now = new Date();
+    const localDate = new Date(now.getTime() - now.getTimezoneOffset() * 60000).toISOString().split('T')[0];
+    const dateInput = document.getElementById('exp-date');
+    dateInput.value = localDate;
+
+    let selectedPayment = "";
+    let attachedFile = null;
+    let isReadingFile = false;
+
+    // Чтение прикреплённого файла в Base64
+    document.getElementById('doc-file').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) {
+        attachedFile = null;
+        document.getElementById('file-name').innerText = "Файл не выбран";
+        return;
+      }
+      if (file.size > 15 * 1024 * 1024) {
+        tg.showAlert("Файл слишком большой (максимум 15 МБ).");
+        e.target.value = "";
+        return;
+      }
+
+      isReadingFile = true;
+      tg.MainButton.disable();
+      document.getElementById('file-name').innerText = `Загрузка файла: ${file.name}...`;
+
+      const reader = new FileReader();
+      reader.onload = () => {
+        attachedFile = {
+          name: file.name,
+          type: file.type,
+          base64: reader.result.split(',')[1]
+        };
+        document.getElementById('file-name').innerText = `Выбран: ${file.name}`;
+        isReadingFile = false;
+        tg.MainButton.enable();
+      };
+      reader.onerror = () => {
+        isReadingFile = false;
+        tg.MainButton.enable();
+        tg.showAlert("Не удалось прочитать файл.");
+      };
+      reader.readAsDataURL(file);
+    });
+
+    function selectPayment(type, btnElement) {
+      selectedPayment = type;
+      document.querySelectorAll('.pay-btn').forEach(b => b.classList.remove('active'));
+      btnElement.classList.add('active');
+    }
+
+    // Загрузка справочников из Google Таблицы
+    async function initApp() {
+      try {
+        const res = await fetch(GAS_URL);
+        const data = await res.json();
+
+        document.getElementById('location').innerHTML = data.locations
+          .map(l => `<option value="${l}">${l}</option>`).join('');
+
+        // Отрисовка кнопок Нал / Безнал
+        const payGroup = document.getElementById('payment-group');
+        payGroup.innerHTML = "";
+        data.paymentTypes.forEach((pt, idx) => {
+          const btn = document.createElement('button');
+          btn.type = "button";
+          btn.className = "pay-btn" + (idx === 0 ? " active" : "");
+          btn.innerText = pt;
+          if (idx === 0) selectedPayment = pt;
+          btn.onclick = () => selectPayment(pt, btn);
+          payGroup.appendChild(btn);
+        });
+
+        document.getElementById('category').innerHTML = data.categories
+          .map(c => `<option value="${c}">${c}</option>`).join('');
+
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('app').style.display = 'block';
+
+        tg.MainButton.text = "ОТПРАВИТЬ РАСХОД";
+        tg.MainButton.show();
+      } catch (err) {
+        document.getElementById('loading').innerText = "Ошибка загрузки справочников. Проверьте ссылку GAS_URL.";
+      }
+    }
+
+    // Отправка расхода
+    tg.MainButton.onClick(async () => {
+      if (isReadingFile) {
+        tg.showAlert("Подождите секунду, файл ещё обрабатывается...");
+        return;
+      }
+
+      const rawDate = dateInput.value;
+      const amount = parseFloat(document.getElementById('amount').value);
+
+      if (!rawDate) {
+        tg.showAlert("Укажите дату расхода!");
+        return;
+      }
+      if (!selectedPayment) {
+        tg.showAlert("Выберите тип оплаты!");
+        return;
+      }
+      if (!amount || amount <= 0) {
+        tg.showAlert("Введите корректную сумму расхода!");
+        return;
+      }
+
+      const [y, m, d] = rawDate.split('-');
+      const formattedDate = `${d}.${m}.${y}`;
+
+      const user = tg.initDataUnsafe.user;
+      const userId = user ? user.id : "";
+      const userName = user
+        ? (user.username ? `@${user.username}` : `${user.first_name || ""} ${user.last_name || ""}`.trim())
+        : "Неизвестно";
+
+      const payload = {
+        date: formattedDate,
+        location: document.getElementById('location').value,
+        paymentType: selectedPayment,
+        category: document.getElementById('category').value,
+        amount: amount,
+        comment: document.getElementById('comment').value.trim(),
+        file: attachedFile,
+        userId: userId,
+        userName: userName
+      };
+
+      tg.MainButton.showProgress();
+      tg.MainButton.disable();
+
+      try {
+        await fetch(GAS_URL, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        tg.MainButton.hideProgress();
+        tg.close();
+      } catch (err) {
+        tg.MainButton.hideProgress();
+        tg.MainButton.enable();
+        tg.showAlert("Ошибка при отправке. Попробуйте ещё раз.");
+      }
+    });
+
+    initApp();
+  </script>
+</body>
+</html>
